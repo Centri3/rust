@@ -132,6 +132,10 @@ macro_rules! declare_combined_late_lint_pass {
             fn name(&self) -> &'static str {
                 panic!()
             }
+
+            fn get_lints(&self) -> LintArray {
+                panic!()
+            }
         }
     )
 }
@@ -241,6 +245,10 @@ macro_rules! declare_combined_early_lint_pass {
         #[allow(rustc::lint_pass_impl_without_macro)]
         impl LintPass for $name {
             fn name(&self) -> &'static str {
+                panic!()
+            }
+
+            fn get_lints(&self) -> LintArray {
                 panic!()
             }
         }

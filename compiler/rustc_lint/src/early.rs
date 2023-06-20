@@ -16,6 +16,7 @@
 
 use crate::context::{EarlyContext, LintContext, LintStore};
 use crate::passes::{EarlyLintPass, EarlyLintPassObject};
+use crate::LintArray;
 use rustc_ast::ptr::P;
 use rustc_ast::visit::{self as ast_visit, Visitor};
 use rustc_ast::{self as ast, walk_list, HasAttrs};
@@ -310,6 +311,10 @@ struct RuntimeCombinedEarlyLintPass<'a> {
 #[allow(rustc::lint_pass_impl_without_macro)]
 impl LintPass for RuntimeCombinedEarlyLintPass<'_> {
     fn name(&self) -> &'static str {
+        panic!()
+    }
+
+    fn get_lints(&self) -> LintArray {
         panic!()
     }
 }

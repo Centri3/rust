@@ -15,7 +15,11 @@
 //! for all lint attributes.
 
 use crate::{passes::LateLintPassObject, LateContext, LateLintPass, LintStore};
+use crate::{CheckLintNameResult, Level};
+use ast::{Attribute, NestedMetaItem};
 use rustc_ast as ast;
+use rustc_ast_pretty::pprust;
+use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::stack::ensure_sufficient_stack;
 use rustc_data_structures::sync::{join, DynSend};
 use rustc_hir as hir;
@@ -24,8 +28,9 @@ use rustc_hir::intravisit as hir_visit;
 use rustc_hir::intravisit::Visitor;
 use rustc_middle::hir::nested_filter;
 use rustc_middle::ty::{self, TyCtxt};
-use rustc_session::lint::LintPass;
-use rustc_span::Span;
+use rustc_session::lint::Level::{Allow, Deny, Forbid, ForceWarn, Warn};
+use rustc_session::lint::{LintArray, LintId, LintPass};
+use rustc_span::{Span, Symbol};
 
 use std::any::Any;
 use std::cell::Cell;
@@ -320,6 +325,10 @@ impl LintPass for RuntimeCombinedLateLintPass<'_, '_> {
     fn name(&self) -> &'static str {
         panic!()
     }
+
+    fn get_lints(&self) -> LintArray {
+        panic!()
+    }
 }
 
 macro_rules! impl_late_lint_pass {
@@ -398,15 +407,88 @@ fn late_lint_crate<'tcx, T: LateLintPass<'tcx> + 'tcx>(tcx: TyCtxt<'tcx>, builti
         generics: None,
         only_module: false,
     };
+    struct V(Vec<Attribute>);
+    impl Visitor<'_> for V {
+        fn visit_attribute(&mut self, attr: &Attribute) {
+            self.0.push(attr.clone());
+        }
+    }
+    let mut v = V(vec![]);
+    tcx.hir().walk_attributes(&mut v);
 
     // Note: `passes` is often empty. In that case, it's faster to run
     // `builtin_lints` directly rather than bundling it up into the
     // `RuntimeCombinedLateLintPass`.
-    let mut passes: Vec<_> =
+    let passes: Vec<_> =
         unerased_lint_store(tcx).late_passes.iter().map(|mk_pass| (mk_pass)(tcx)).collect();
     if passes.is_empty() {
         late_lint_crate_inner(tcx, context, builtin_lints);
     } else {
+        let mut max_lint_levels = passes
+            .iter()
+            .map(|pass| pass.get_lints())
+            .flatten()
+            .map(|lint| (LintId::of(lint), lint.default_level))
+            .collect::<FxHashMap<_, Level>>();
+        for (lint, lvl) in &tcx.sess.opts.lint_opts {
+            let (tool_name, name) = if let Some(split) = lint.split_once("::") {
+                (Some(Symbol::intern(split.0)), split.1)
+            } else {
+                (None, lint.as_str())
+            };
+            match context.lint_store.check_lint_name(&name, tool_name, tcx.registered_tools(())) {
+                CheckLintNameResult::Ok(ids) | CheckLintNameResult::Tool(Ok(ids)) => {
+                    for id in ids.iter() {
+                        if let Some(prev_lvl) = max_lint_levels.get_mut(id) {
+                            *prev_lvl = (*prev_lvl).max(*lvl);
+                        }
+                    }
+                }
+                _ => continue,
+            }
+        }
+        for attr in v.0 {
+            let Some(lvl @ (Warn | ForceWarn(_) | Deny | Forbid))
+                = Level::from_attr(&attr)
+            else {
+                continue;
+            };
+            let Some(metas) = attr.meta_item_list() else {
+                continue;
+            };
+            for lint in metas {
+                let mut meta_item = match lint {
+                    NestedMetaItem::MetaItem(meta_item) if meta_item.is_word() => meta_item,
+                    _ => continue,
+                };
+                let tool_name = (meta_item.path.segments.len() > 1)
+                    .then(|| meta_item.path.segments.remove(0).ident.name);
+                let name = pprust::path_to_string(&meta_item.path);
+                let lint_result =
+                    context.lint_store.check_lint_name(&name, tool_name, tcx.registered_tools(()));
+                match lint_result {
+                    CheckLintNameResult::Ok(ids) | CheckLintNameResult::Tool(Ok(ids)) => {
+                        for id in ids.iter() {
+                            if let Some(prev_lvl) = max_lint_levels.get_mut(id) {
+                                *prev_lvl = (*prev_lvl).max(lvl);
+                            }
+                        }
+                    }
+                    _ => continue,
+                }
+            }
+        }
+        // Filter out passes that we know are allowed globally; This way, passes
+        // containing no lints that will be emitted are not processed
+        let mut passes = passes
+            .into_iter()
+            .filter(|pass| {
+                pass.get_lints().iter().any(|lint| {
+                    max_lint_levels.get(&LintId::of(lint)).is_some_and(|&lvl| lvl > Allow)
+                })
+            })
+            .collect::<Vec<Box<dyn LateLintPass<'_>>>>();
+        // `builtin_lints` panics on `get_lints`, so we do not check it
         passes.push(Box::new(builtin_lints));
         let pass = RuntimeCombinedLateLintPass { passes: &mut passes[..] };
         late_lint_crate_inner(tcx, context, pass);
