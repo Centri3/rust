@@ -14,7 +14,7 @@ use crate::errors::{
     PatternMethodParamWithoutBody, QuestionMarkInType, QuestionMarkInTypeSugg, SelfParamNotFirst,
     StructLiteralBodyWithoutPath, StructLiteralBodyWithoutPathSugg, StructLiteralNeedingParens,
     StructLiteralNeedingParensSugg, SuggAddMissingLetStmt, SuggEscapeIdentifier, SuggRemoveComma,
-    UnexpectedConstInGenericParam, UnexpectedConstParamDeclaration,
+    TernaryOperator, UnexpectedConstInGenericParam, UnexpectedConstParamDeclaration,
     UnexpectedConstParamDeclarationSugg, UnmatchedAngleBrackets, UseEqInstead,
 };
 
@@ -500,6 +500,12 @@ impl<'a> Parser<'a> {
 
         // Special-case "expected `;`" errors
         if expected.contains(&TokenType::Token(token::Semi)) {
+            if self.prev_token.kind == token::Question {
+                self.sess.emit_err(TernaryOperator { question_span: self.prev_token.span });
+                self.recover_stmt();
+                return Ok(true);
+            }
+
             if self.token.span == DUMMY_SP || self.prev_token.span == DUMMY_SP {
                 // Likely inside a macro, can't provide meaningful suggestions.
             } else if !sm.is_multiline(self.prev_token.span.until(self.token.span)) {
