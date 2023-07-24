@@ -339,14 +339,20 @@ impl<'a> Parser<'a> {
             HelpIdentifierStartsWithNumber { num_span: invalid }
         });
 
-        let err = ExpectedIdentifier {
-            span: bad_token.span,
-            token: bad_token,
-            suggest_raw,
-            suggest_remove_comma,
-            help_cannot_start_number,
+        let mut err = if let Some(lo) = self.maybe_ternary_lo && self.token == token::Colon {
+            self.bump();
+            self.parse_expr()?;
+            self.sess.create_err(TernaryOperator { span: self.token.span.with_lo(lo) })
+        } else {
+            ExpectedIdentifier {
+                span: bad_token.span,
+                token: bad_token,
+                suggest_raw,
+                suggest_remove_comma,
+                help_cannot_start_number,
+            }
+            .into_diagnostic(&self.sess.span_diagnostic)
         };
-        let mut err = err.into_diagnostic(&self.sess.span_diagnostic);
 
         // if the token we have is a `<`
         // it *might* be a misplaced generic
@@ -501,9 +507,10 @@ impl<'a> Parser<'a> {
         // Special-case "expected `;`" errors
         if expected.contains(&TokenType::Token(token::Semi)) {
             if self.prev_token.kind == token::Question {
-                self.sess.emit_err(TernaryOperator { question_span: self.prev_token.span });
-                self.recover_stmt();
-                return Ok(true);
+                self.maybe_ternary_lo = Some(self.prev_token.span.lo());
+                let result = self.maybe_recover_from_ternary_operator().map(|_| true);
+                self.maybe_ternary_lo = None;
+                return result;
             }
 
             if self.token.span == DUMMY_SP || self.prev_token.span == DUMMY_SP {
@@ -1336,6 +1343,20 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Rust has no ternary operator (`cond ? then : else`). Parse it and try
+    /// to recover from it if `then` and `else` are valid expressions.
+    pub(super) fn maybe_recover_from_ternary_operator(&mut self) -> PResult<'a, ()> {
+        if self.prev_token == token::Question {
+            let lo = self.prev_token.span.lo();
+            self.parse_expr()?;
+            if self.eat_noexpect(&token::Colon) {
+                self.parse_expr()?;
+                self.sess.emit_err(TernaryOperator { span: self.token.span.with_lo(lo) });
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn maybe_recover_from_bad_type_plus(&mut self, ty: &Ty) -> PResult<'a, ()> {
         // Do not add `+` to expected tokens.
         if !self.token.is_like_plus() {
@@ -2117,7 +2138,7 @@ impl<'a> Parser<'a> {
             }
             _ => (
                 self.token.span,
-                format!("expected expression, found {}", super::token_descr(&self.token),),
+                format!("expected expression, found {}", super::token_descr(&self.token)),
             ),
         };
         let mut err = self.struct_span_err(span, msg);

@@ -370,7 +370,7 @@ pub(crate) enum IfExpressionMissingThenBlockSub {
 #[help]
 pub struct TernaryOperator {
     #[primary_span]
-    pub question_span: Span,
+    pub span: Span,
 }
 
 #[derive(Subdiagnostic)]
